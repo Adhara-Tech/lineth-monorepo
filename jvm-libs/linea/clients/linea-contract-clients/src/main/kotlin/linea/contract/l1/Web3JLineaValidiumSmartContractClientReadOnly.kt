@@ -7,14 +7,24 @@ import linea.kotlin.toBigInteger
 import linea.kotlin.toULong
 import linea.web3j.domain.toWeb3j
 import net.consensys.linea.async.toSafeFuture
+import org.apache.logging.log4j.LogManager
+import org.apache.logging.log4j.Logger
 import org.web3j.protocol.Web3j
 import org.web3j.tx.gas.StaticGasProvider
 import tech.pegasys.teku.infrastructure.async.SafeFuture
 import java.math.BigInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.time.Clock
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
+import kotlin.time.Instant
 
 open class Web3JLineaValidiumSmartContractClientReadOnly(
   val web3j: Web3j,
   val contractAddress: String,
+  private val versionRefreshInterval: Duration = 6.seconds,
+  private val clock: Clock = Clock.System,
+  private val log: Logger = LogManager.getLogger(Web3JLineaValidiumSmartContractClientReadOnly::class.java),
 ) : LineaValidiumSmartContractClientReadOnly, FinalizedStateDataProvider {
   protected fun contractClientAtBlock(blockParameter: BlockParameter): ValidiumV1 {
     return ValidiumV1.load(
@@ -29,17 +39,67 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
 
   override fun getAddress(): String = contractAddress
 
+  private data class CachedVersion(
+    val version: LineaValidiumContractVersion,
+    val fetchedAt: Instant,
+  )
+
+  private val smartContractVersionCache = AtomicReference<CachedVersion>(null)
+
+  private fun getSmartContractVersion(): SafeFuture<LineaValidiumContractVersion> {
+    val cached = smartContractVersionCache.get()
+    return when {
+      // once upgraded, it's not downgraded
+      cached?.version == LineaValidiumContractVersion.latest ->
+        SafeFuture.completedFuture(LineaValidiumContractVersion.latest)
+
+      // below latest: serve from cache within the refresh interval so repeated getVersion calls
+      // don't refetch on every call, while still detecting an upgrade within versionRefreshInterval
+      cached != null && clock.now() < cached.fetchedAt + versionRefreshInterval ->
+        SafeFuture.completedFuture(cached.version)
+
+      else ->
+        fetchSmartContractVersion()
+          .thenPeek { fetchedVersion ->
+            val current = smartContractVersionCache.get()
+            // prevent inflight request to override and rollback
+            if (current == null || fetchedVersion >= current.version) {
+              smartContractVersionCache.set(CachedVersion(fetchedVersion, clock.now()))
+
+              if (current != null && fetchedVersion != current.version) {
+                log.info(
+                  "Validium smart contract upgraded: prevVersion={} upgradedVersion={}",
+                  current.version,
+                  fetchedVersion,
+                )
+              }
+            }
+          }
+    }
+  }
+
   // CONTRACT_VERSION() exists on both V1 and V2, so the V1 wrapper can read it on either contract.
-  override fun getVersion(blockParameter: BlockParameter): SafeFuture<LineaValidiumContractVersion> =
-    contractClientAtBlock(blockParameter)
+  internal open fun fetchSmartContractVersion(
+    blockParameter: BlockParameter = BlockParameter.Tag.LATEST,
+  ): SafeFuture<LineaValidiumContractVersion> {
+    return contractClientAtBlock(blockParameter)
       .CONTRACT_VERSION().sendAsync()
       .toSafeFuture()
       .thenApply(::parseContractVersion)
+  }
 
-  private fun parseContractVersion(version: String): LineaValidiumContractVersion = when {
+  internal fun parseContractVersion(version: String): LineaValidiumContractVersion = when {
     version.startsWith("1") -> LineaValidiumContractVersion.V1
     version.startsWith("2") -> LineaValidiumContractVersion.V2
     else -> throw IllegalStateException("Unsupported Validium contract version: $version")
+  }
+
+  override fun getVersion(blockParameter: BlockParameter): SafeFuture<LineaValidiumContractVersion> {
+    return if (blockParameter == BlockParameter.Tag.LATEST) {
+      getSmartContractVersion()
+    } else {
+      fetchSmartContractVersion(blockParameter)
+    }
   }
 
   override fun finalizedL2BlockNumber(blockParameter: BlockParameter): SafeFuture<ULong> {

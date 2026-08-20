@@ -20,6 +20,11 @@ enum class LinethRollupContractVersion : Comparable<LinethRollupContractVersion>
 enum class LineaValidiumContractVersion : Comparable<LineaValidiumContractVersion> {
   V1,
   V2, // forced transactions + address filter (FinalizationDataV4)
+  ;
+
+  companion object {
+    val latest: LineaValidiumContractVersion = entries.last()
+  }
 }
 
 interface LineaSmartContractClientReadOnly {
