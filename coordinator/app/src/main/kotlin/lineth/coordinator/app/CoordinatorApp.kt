@@ -7,6 +7,9 @@ import io.vertx.micrometer.backends.NoopBackendRegistry
 import io.vertx.sqlclient.SqlClient
 import linea.DisabledService
 import linea.LongRunningService
+import linea.contract.l1.FinalizedStateDataProvider
+import linea.contract.l1.LineaSmartContractClientReadOnly
+import linea.contract.l1.Web3JLineaValidiumSmartContractClientReadOnly
 import linea.contract.l1.Web3JLinethRollupSmartContractClientReadOnly
 import linea.domain.BlockParameter
 import linea.domain.RetryConfig
@@ -21,6 +24,7 @@ import lineth.coordinator.app.conflation.ConflationAppV2
 import lineth.coordinator.app.conflationbacktesting.ConflationBacktestingService
 import lineth.coordinator.config.v2.CoordinatorConfig
 import lineth.coordinator.config.v2.DatabaseConfig
+import lineth.coordinator.config.v2.L1SubmissionConfig
 import lineth.coordinator.config.v2.isEnabled
 import lineth.coordinator.config.v2.logPretty
 import lineth.coordinator.extensions.CoordinatorContext
@@ -177,30 +181,45 @@ class CoordinatorApp(
     ),
   ).ethChainId().get()
 
-  private val linethRollupClientForFinalizationMonitor = run {
+  private val dataAvailability: L1SubmissionConfig.DataAvailability =
+    configs.l1Submission?.dataAvailability ?: L1SubmissionConfig.DataAvailability.ROLLUP
+
+  // The finalization monitor READS the L1 contract, so it must speak the same flavour (rollup or
+  // validium) as the deployed contract. This was hardcoded to the rollup read-only client, which
+  // fails against a validium contract ("Unsupported contract version") — the #601 gap.
+  private val finalizationMonitorClient: LineaSmartContractClientReadOnly = run {
     val web3j = createWeb3jHttpClient(
       rpcUrl = configs.l1FinalizationMonitor.l1Endpoint.toString(),
       log = LogManager.getLogger("clients.l1.eth.finalization-monitor"),
     )
-    Web3JLinethRollupSmartContractClientReadOnly(
-      contractAddress = configs.protocol.l1.contractAddress,
-      web3j = web3j,
-      ethLogsSearcher = EthLogsSearcherImpl(
-        vertx = vertx,
-        ethApiClient = createEthApiClient(
-          web3jClient = web3j,
-          requestRetryConfig = configs.l1FinalizationMonitor.l1RequestRetries,
-          vertx = vertx,
-        ),
-      ),
-      finalizedStateSearchInitialBlockParameter = configs.protocol.l1.contractDeploymentBlockNumber
-        ?: BlockParameter.Tag.EARLIEST,
-    )
+    when (dataAvailability) {
+      L1SubmissionConfig.DataAvailability.ROLLUP ->
+        Web3JLinethRollupSmartContractClientReadOnly(
+          contractAddress = configs.protocol.l1.contractAddress,
+          web3j = web3j,
+          ethLogsSearcher = EthLogsSearcherImpl(
+            vertx = vertx,
+            ethApiClient = createEthApiClient(
+              web3jClient = web3j,
+              requestRetryConfig = configs.l1FinalizationMonitor.l1RequestRetries,
+              vertx = vertx,
+            ),
+          ),
+          finalizedStateSearchInitialBlockParameter = configs.protocol.l1.contractDeploymentBlockNumber
+            ?: BlockParameter.Tag.EARLIEST,
+        )
+
+      L1SubmissionConfig.DataAvailability.VALIDIUM ->
+        Web3JLineaValidiumSmartContractClientReadOnly(
+          contractAddress = configs.protocol.l1.contractAddress,
+          web3j = web3j,
+        )
+    }
   }
 
   private val lastFinalizedBlock: ULong = L1BasedLastFinalizedBlockProvider(
     vertx,
-    linethRollupSmartContractClient = linethRollupClientForFinalizationMonitor,
+    lineaSmartContractClient = finalizationMonitorClient,
     consistentNumberOfBlocksOnL1 = configs.conflation.consistentNumberOfBlocksOnL1ToWait,
   ).getLastFinalizedBlock().get()
 
@@ -233,7 +252,8 @@ class CoordinatorApp(
     configs = configs,
     vertx = vertx,
     httpJsonRpcClientFactory = httpJsonRpcClientFactory,
-    finalizedStateDataProvider = linethRollupClientForFinalizationMonitor,
+    // Safe cast: both the rollup and validium read-only clients above implement FinalizedStateDataProvider.
+    finalizedStateDataProvider = finalizationMonitorClient as FinalizedStateDataProvider,
     lastFinalizedBlock = lastFinalizedBlock,
     batchesRepository = batchesRepository,
     blobsRepository = blobsRepository,

@@ -57,6 +57,7 @@ import lineth.coordinator.clients.ForcedTransactionsJsonRpcClient
 import lineth.coordinator.clients.prover.ProverClientFactory
 import lineth.coordinator.config.toJsonRpcRetry
 import lineth.coordinator.config.v2.CoordinatorConfig
+import lineth.coordinator.config.v2.L1SubmissionConfig
 import lineth.encoding.BlockRLPEncoder
 import lineth.fileio.DirectoryCleaner
 import lineth.metrics.LineaMetricsCategory
@@ -129,7 +130,15 @@ class ConflationAppV1(
       smartContractDeploymentBlockNumber = configs.protocol.l2.contractDeploymentBlockNumber?.number,
     ),
   private val forcedTransactionsApp: ForcedTransactionsApp = run {
-    if (configs.forcedTransactions == null || configs.forcedTransactions.disabled) {
+    // Forced transactions are a rollup-only feature (rollup contract V8+): the app below reads the
+    // ROLLUP contract for version/finalized-state, which fails against a validium contract. Under
+    // VALIDIUM, ignore the feature even if enabled in config.
+    val isValidium = configs.l1Submission?.dataAvailability == L1SubmissionConfig.DataAvailability.VALIDIUM
+    if (isValidium && configs.forcedTransactions?.disabled == false) {
+      LogManager.getLogger("conflation.app")
+        .warn("Forced transactions are enabled in config but are a rollup-only feature; disabling under VALIDIUM")
+    }
+    if (configs.forcedTransactions == null || configs.forcedTransactions.disabled || isValidium) {
       ForcedTransactionsApp.createDisabled()
     } else {
       check(configs.proversConfig.proverA.invalidity != null) {
