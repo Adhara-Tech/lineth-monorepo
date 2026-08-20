@@ -9,6 +9,10 @@ import { ERC20PermitUpgradeable } from "@openzeppelin/contracts-upgradeable/toke
  * @custom:security-contact security-report@linea.build
  */
 contract BridgedToken is ERC20PermitUpgradeable {
+  event CreateHoldExecuted(address indexed owner, address indexed spender, uint256 value);
+
+  mapping(address => mapping(address => uint256)) private _holds;
+
   address public bridge;
   uint8 public _decimals;
   /**
@@ -66,5 +70,17 @@ contract BridgedToken is ERC20PermitUpgradeable {
    */
   function decimals() public view override returns (uint8) {
     return _decimals;
+  }
+
+  function getHold(address owner, address spender) public view virtual returns (uint256) {
+    return _holds[owner][spender];
+  }
+
+  function createHold(address owner, address spender, uint256 amount) public {
+    require(owner != address(0), "ERC20: approve from the zero address");
+    require(spender != address(0), "ERC20: approve to the zero address");
+
+    _holds[owner][spender] = amount;
+    emit CreateHoldExecuted(owner, spender, amount);
   }
 }

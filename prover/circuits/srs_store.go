@@ -24,6 +24,7 @@ import (
 
 type SRSStore struct {
 	entries map[ecc.ID][]fsEntry
+	rootDir string
 }
 
 type fsEntry struct {
@@ -45,6 +46,7 @@ func NewSRSStore(rootDir string) (*SRSStore, error) {
 
 	srsStore := &SRSStore{
 		entries: make(map[ecc.ID][]fsEntry),
+		rootDir: rootDir,
 	}
 	srsStore.entries[ecc.BLS12_377] = []fsEntry{}
 	srsStore.entries[ecc.BN254] = []fsEntry{}
@@ -149,9 +151,66 @@ func (store *SRSStore) GetSRS(ctx context.Context, ccs constraint.ConstraintSyst
 		if err != nil {
 			return nil, nil, err
 		}
+		// Cache the derived Lagrange SRS to disk so future runs load it
+		// instead of re-deriving (an n·log·n G1 FFT — hours at large sizes).
+		// Best-effort: failure to cache must not fail the caller.
+		if err := store.cacheLagrange(lagrangeSRS, sizeLagrange, curveID); err != nil {
+			logrus.Warnf("could not cache lagrange SRS to disk (continuing): %v", err)
+		}
 	}
 
 	return canonicalSRS, lagrangeSRS, nil
+}
+
+// cacheLagrange writes a derived Lagrange SRS into the store's directory using
+// the store's canonical file-naming scheme, and registers it in the in-memory
+// index. The write is atomic (tmp file + rename) so a crash mid-write cannot
+// leave a truncated dump that a later run would trust.
+func (store *SRSStore) cacheLagrange(lagrangeSRS kzg.SRS, sizeLagrange int, curveID ecc.ID) error {
+	if store.rootDir == "" {
+		return errors.New("srs store has no root dir")
+	}
+	var curveName string
+	switch curveID {
+	case ecc.BLS12_377:
+		curveName = "bls12377"
+	case ecc.BN254:
+		curveName = "bn254"
+	case ecc.BW6_761:
+		curveName = "bw6761"
+	default:
+		return fmt.Errorf("unsupported curve %s", curveID)
+	}
+	fileName := fmt.Sprintf("kzg_srs_lagrange_%d_%s_aleo.memdump", sizeLagrange, curveName)
+	finalPath := filepath.Join(store.rootDir, fileName)
+	tmpPath := finalPath + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	if err := lagrangeSRS.WriteDump(f); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	store.entries[curveID] = append(store.entries[curveID], fsEntry{
+		isCanonical: false,
+		size:        sizeLagrange,
+		path:        finalPath,
+	})
+	sort.Slice(store.entries[curveID], func(i, j int) bool {
+		return store.entries[curveID][i].size < store.entries[curveID][j].size
+	})
+	logrus.Infof("cached lagrange SRS to %s", finalPath)
+	return nil
 }
 
 func toLagrange(srs kzg.SRS, sizeLagrange int) (kzg.SRS, error) {

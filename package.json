@@ -9,7 +9,8 @@
     "lint": "pnpm run -r --if-present lint",
     "lint:fix": "pnpm run -r --if-present lint:fix",
     "prepare": "husky",
-    "test": "pnpm run -r --if-present test"
+    "test": "pnpm run -r --if-present test",
+    "test:e2e:bridge:local": "TEST_ENV=local npx jest ./src/bridge-tokens.spec.ts"
   },
   "devDependencies": {
     "@types/node": "24.12.2",
