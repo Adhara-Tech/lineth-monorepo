@@ -130,13 +130,19 @@ class ConflationAppV1(
       smartContractDeploymentBlockNumber = configs.protocol.l2.contractDeploymentBlockNumber?.number,
     ),
   private val forcedTransactionsApp: ForcedTransactionsApp = run {
-    // Forced transactions are a rollup-only feature (rollup contract V8+): the app below reads the
-    // ROLLUP contract for version/finalized-state, which fails against a validium contract. Under
-    // VALIDIUM, ignore the feature even if enabled in config.
+    // The coordinator does not support forced transactions on validium chains yet: ForcedTransactionsApp
+    // reads the contract through the rollup client, which fails version detection against a validium
+    // contract. Disable the feature under VALIDIUM even when enabled in config.
+    // KNOWN LIMITATION: the validium V2 contract itself enforces forced-transaction inclusion at
+    // finalization, so storing a forced transaction on such a deployment halts finalization until
+    // coordinator support is added — do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
     val isValidium = configs.l1Submission?.dataAvailability == L1SubmissionConfig.DataAvailability.VALIDIUM
     if (isValidium && configs.forcedTransactions?.disabled == false) {
       LogManager.getLogger("conflation.app")
-        .warn("Forced transactions are enabled in config but are a rollup-only feature; disabling under VALIDIUM")
+        .warn(
+          "Forced transactions are enabled in config but the coordinator does not support them on validium " +
+            "chains yet; disabling. Storing a forced transaction on a validium V2 contract halts finalization.",
+        )
     }
     if (configs.forcedTransactions == null || configs.forcedTransactions.disabled || isValidium) {
       ForcedTransactionsApp.createDisabled()

@@ -25,7 +25,7 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
   private val versionRefreshInterval: Duration = 6.seconds,
   private val clock: Clock = Clock.System,
   private val log: Logger = LogManager.getLogger(Web3JLineaValidiumSmartContractClientReadOnly::class.java),
-) : LineaValidiumSmartContractClientReadOnly, FinalizedStateDataProvider {
+) : LineaValidiumSmartContractClientReadOnly, LineaSmartContractClientReadOnlyFinalizedStateProvider {
   protected fun contractClientAtBlock(blockParameter: BlockParameter): ValidiumV1 {
     return ValidiumV1.load(
       contractAddress,
@@ -109,18 +109,30 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
       .toSafeFuture()
   }
 
-  // Validium mirrors the rollup V6/V7 behaviour: forced transactions are a rollup-only feature, so the
-  // forced-transaction number is always the initial value (0). The finalization monitor only needs the
-  // finalized block number to advance.
   override fun getFinalizedStateData(
     blockParameter: BlockParameter,
   ): SafeFuture<FinalizedStateDataProvider.FinalizedStateData> {
-    return finalizedL2BlockNumber(blockParameter)
-      .thenApply { finalizedBlockNumber ->
-        FinalizedStateDataProvider.FinalizedStateData(
-          blockNumber = finalizedBlockNumber,
-          forcedTransactionNumber = 0UL,
-        )
+    return getVersion()
+      .thenCombine(finalizedL2BlockNumber(blockParameter)) { version, finalizedBlockNumber ->
+        when (version) {
+          // V1 contracts have no forced transactions, so the number is always the initial value (0),
+          // mirroring the rollup client's V6/V7 behaviour.
+          LineaValidiumContractVersion.V1 ->
+            FinalizedStateDataProvider.FinalizedStateData(
+              blockNumber = finalizedBlockNumber,
+              forcedTransactionNumber = 0UL,
+            )
+
+          // V2 contracts DO track forced transactions on-chain, but the coordinator does not support
+          // forced transactions on validium chains yet (they are disabled at app wiring). Once that
+          // support lands, this branch must read the FinalizedStateUpdated event like the rollup
+          // client's V8+ path instead of reporting the initial value.
+          LineaValidiumContractVersion.V2 ->
+            FinalizedStateDataProvider.FinalizedStateData(
+              blockNumber = finalizedBlockNumber,
+              forcedTransactionNumber = 0UL,
+            )
+        }
       }
   }
 

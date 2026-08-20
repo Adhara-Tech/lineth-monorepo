@@ -71,22 +71,28 @@ class Web3JLineaValidiumSmartContractClientReadOnlyTest {
 
   @Test
   fun `getFinalizedStateData reports the finalized block with a zero forced-transaction number`() {
-    // Forced transactions are a rollup-only feature; validium always reports the initial value (0),
-    // mirroring the rollup client's V6/V7 behaviour.
-    val fakeClient = object : Web3JLineaValidiumSmartContractClientReadOnly(
-      web3j = mock<Web3j>(),
-      contractAddress = contractAddress,
-    ) {
-      override fun finalizedL2BlockNumber(blockParameter: BlockParameter): SafeFuture<ULong> =
-        SafeFuture.completedFuture(42UL)
-    }
+    // V1 has no forced transactions; V2 has them on-chain but the coordinator does not support them
+    // on validium yet — both report the initial value (0) until that support lands.
+    LineaValidiumContractVersion.entries.forEach { version ->
+      val fakeClient = object : Web3JLineaValidiumSmartContractClientReadOnly(
+        web3j = mock<Web3j>(),
+        contractAddress = contractAddress,
+      ) {
+        override fun fetchSmartContractVersion(
+          blockParameter: BlockParameter,
+        ): SafeFuture<LineaValidiumContractVersion> = SafeFuture.completedFuture(version)
 
-    assertThat(fakeClient.getFinalizedStateData(BlockParameter.Tag.LATEST).get())
-      .isEqualTo(
-        FinalizedStateDataProvider.FinalizedStateData(
-          blockNumber = 42UL,
-          forcedTransactionNumber = 0UL,
-        ),
-      )
+        override fun finalizedL2BlockNumber(blockParameter: BlockParameter): SafeFuture<ULong> =
+          SafeFuture.completedFuture(42UL)
+      }
+
+      assertThat(fakeClient.getFinalizedStateData(BlockParameter.Tag.LATEST).get())
+        .isEqualTo(
+          FinalizedStateDataProvider.FinalizedStateData(
+            blockNumber = 42UL,
+            forcedTransactionNumber = 0UL,
+          ),
+        )
+    }
   }
 }

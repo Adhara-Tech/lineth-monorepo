@@ -84,6 +84,15 @@ interface LineaValidiumSmartContractClientReadOnly :
   ContractVersionProvider<LineaValidiumContractVersion>
 
 /**
+ * A read-only client that also provides the finalized state data the finalization monitor consumes.
+ * Implemented by both the rollup and validium read-only clients so DA-aware wiring can use either
+ * without a runtime cast.
+ */
+interface LineaSmartContractClientReadOnlyFinalizedStateProvider :
+  LineaSmartContractClientReadOnly,
+  FinalizedStateDataProvider
+
+/**
  * Polls contract's version until contract's is equal or greater than target version.
  *
  * This is useful for components that depend on a Contract upcoming feature and

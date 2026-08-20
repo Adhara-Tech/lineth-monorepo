@@ -65,24 +65,55 @@ class FinalizationFunctionBuildersTest {
     // Validium V2's FinalizationDataV4 is the same tuple as rollup V8's, so the (positionally
     // encoded) parameter payload must match the battle-tested V8 builder byte for byte — this
     // pins the struct field ORDER, the one thing that can silently corrupt the calldata.
+    // Every V4-specific field gets a DISTINCT non-zero value so a swapped or substituted argument
+    // (e.g. the two ftx numbers, or the parent vs final ftx rolling hash) changes the encoding.
+    val distinctlyPopulatedAggregation = createProofToFinalize(
+      firstBlockNumber = 1L,
+      finalBlockNumber = 2L,
+      parentAggregationFtxNumber = 7UL,
+      finalFtxNumber = 9UL,
+      parentAggregationFtxRollingHash = ByteArray(32) { 0x0a },
+      finalFtxRollingHash = ByteArray(32) { 0x0b },
+      filteredAddresses = listOf(ByteArray(20) { 0x0c }, ByteArray(20) { 0x0d }),
+    )
+    val parentL1RollingHash = ByteArray(32) { 0x0e }
+    val parentL1RollingHashMessageNumber = 3L
+
     val v2 = FunctionEncoder.encode(
       Web3JLineaValidiumFunctionBuilders.buildFinalizeBlockFunctionV2(
-        aggregation,
+        distinctlyPopulatedAggregation,
         blob,
-        ByteArray(32),
-        0L,
+        parentL1RollingHash,
+        parentL1RollingHashMessageNumber,
       ),
     )
     val v8 = FunctionEncoder.encode(
       FunctionBuildersV8.buildFinalizeBlocksFunctionV8(
-        aggregation,
+        distinctlyPopulatedAggregation,
         blob,
-        ByteArray(32),
-        0L,
+        parentL1RollingHash,
+        parentL1RollingHashMessageNumber,
       ),
     )
     // strip the 4-byte selectors ("0x" + 8 hex chars); the parameter encoding must be identical
     assertThat(v2.substring(10)).isEqualTo(v8.substring(10))
+  }
+
+  @Test
+  fun `Validium V2 acceptShnarfData reuses the V1 encoding byte for byte`() {
+    val v1 = FunctionEncoder.encode(
+      Web3JLineaValidiumFunctionBuilders.buildAcceptShnarfDataFunction(
+        LineaValidiumContractVersion.V1,
+        listOf(blob),
+      ),
+    )
+    val v2 = FunctionEncoder.encode(
+      Web3JLineaValidiumFunctionBuilders.buildAcceptShnarfDataFunction(
+        LineaValidiumContractVersion.V2,
+        listOf(blob),
+      ),
+    )
+    assertThat(v2).isEqualTo(v1)
   }
 
   @Test
