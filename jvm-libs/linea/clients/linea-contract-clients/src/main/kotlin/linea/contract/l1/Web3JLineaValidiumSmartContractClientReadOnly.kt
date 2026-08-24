@@ -25,7 +25,7 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
   private val versionRefreshInterval: Duration = 6.seconds,
   private val clock: Clock = Clock.System,
   private val log: Logger = LogManager.getLogger(Web3JLineaValidiumSmartContractClientReadOnly::class.java),
-) : LineaValidiumSmartContractClientReadOnly, LineaSmartContractClientReadOnlyFinalizedStateProvider {
+) : LineaValidiumSmartContractClientReadOnly, FinalizedStateDataClientReadOnly {
   protected fun contractClientAtBlock(blockParameter: BlockParameter): ValidiumV1 {
     return ValidiumV1.load(
       contractAddress,
@@ -39,6 +39,10 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
 
   override fun getAddress(): String = contractAddress
 
+  // NOTE: this version cache is intentionally a copy of Web3JLinethRollupSmartContractClientReadOnly's,
+  // kept as-is to keep this PR narrow. Both version enums are now Comparable with a `latest`, so the two
+  // should be extracted into one shared generic — and the get-then-set below made atomic (updateAndGet) —
+  // as a follow-up, in both clients together rather than diverging here.
   private data class CachedVersion(
     val version: LineaValidiumContractVersion,
     val fetchedAt: Instant,
@@ -88,11 +92,13 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
       .thenApply(::parseContractVersion)
   }
 
-  internal fun parseContractVersion(version: String): LineaValidiumContractVersion = when {
-    version.startsWith("1") -> LineaValidiumContractVersion.V1
-    version.startsWith("2") -> LineaValidiumContractVersion.V2
-    else -> throw IllegalStateException("Unsupported Validium contract version: $version")
-  }
+  internal fun parseContractVersion(version: String): LineaValidiumContractVersion =
+    // Match on the major component so "10.0" is not misread as V1 by a bare "1" prefix.
+    when (version.substringBefore('.')) {
+      "1" -> LineaValidiumContractVersion.V1
+      "2" -> LineaValidiumContractVersion.V2
+      else -> throw IllegalStateException("Unsupported Validium contract version: $version")
+    }
 
   override fun getVersion(blockParameter: BlockParameter): SafeFuture<LineaValidiumContractVersion> {
     return if (blockParameter == BlockParameter.Tag.LATEST) {
@@ -112,6 +118,12 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
   override fun getFinalizedStateData(
     blockParameter: BlockParameter,
   ): SafeFuture<FinalizedStateDataProvider.FinalizedStateData> {
+    // Read the version even though both branches return zero today: the exhaustive `when` forces a
+    // conscious decision when V3 lands, and this is where the "coordinator doesn't support forced
+    // transactions on validium yet" limitation lives. Don't simplify this to just returning zero
+    // without the version check.
+    // Note: the version is read at LATEST while the finalized state uses blockParameter (mirrors the
+    // rollup client); harmless because the finalization monitor only ever queries LATEST.
     return getVersion()
       .thenCombine(finalizedL2BlockNumber(blockParameter)) { version, finalizedBlockNumber ->
         when (version) {

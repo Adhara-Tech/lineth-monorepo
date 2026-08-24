@@ -88,7 +88,7 @@ interface LineaValidiumSmartContractClientReadOnly :
  * Implemented by both the rollup and validium read-only clients so DA-aware wiring can use either
  * without a runtime cast.
  */
-interface LineaSmartContractClientReadOnlyFinalizedStateProvider :
+interface FinalizedStateDataClientReadOnly :
   LineaSmartContractClientReadOnly,
   FinalizedStateDataProvider
 

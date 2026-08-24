@@ -7,7 +7,7 @@ import io.vertx.micrometer.backends.NoopBackendRegistry
 import io.vertx.sqlclient.SqlClient
 import linea.DisabledService
 import linea.LongRunningService
-import linea.contract.l1.LineaSmartContractClientReadOnlyFinalizedStateProvider
+import linea.contract.l1.FinalizedStateDataClientReadOnly
 import linea.contract.l1.Web3JLineaValidiumSmartContractClientReadOnly
 import linea.contract.l1.Web3JLinethRollupSmartContractClientReadOnly
 import linea.domain.BlockParameter
@@ -18,6 +18,7 @@ import linea.persistence.db.PersistenceRetryer
 import linea.web3j.createWeb3jHttpClient
 import linea.web3j.ethapi.createEthApiClient
 import lineth.coordinator.api.Api
+import lineth.coordinator.app.conflation.ConflationAppHelper
 import lineth.coordinator.app.conflation.ConflationAppV1
 import lineth.coordinator.app.conflation.ConflationAppV2
 import lineth.coordinator.app.conflationbacktesting.ConflationBacktestingService
@@ -155,8 +156,19 @@ class CoordinatorApp(
         persistenceRetryer = persistenceRetryer,
       ),
     )
+
+  // The data-availability mode decides which L1 contract client the read path uses, so l1Submission is
+  // now mandatory for every coordinator (the TOML [l1-submission] section always provides it). Fail
+  // loudly naming the missing key rather than silently defaulting to ROLLUP on a validium chain.
+  private val dataAvailability: L1SubmissionConfig.DataAvailability =
+    requireNotNull(configs.l1Submission) {
+      "l1Submission config is required to determine the L1 data-availability mode (rollup vs validium)"
+    }.dataAvailability
+
+  // Forced transactions are unsupported under validium, so the DAO must be disabled there too — not just
+  // the ForcedTransactionsApp. ConflationAppHelper is the single source of truth for that decision.
   private val forcedTransactionsDao = run {
-    if (configs.forcedTransactions?.disabled ?: true) {
+    if (!ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)) {
       DisabledForcedTransactionsDao()
     } else {
       RetryingPostgresForcedTransactionsDao(
@@ -180,13 +192,10 @@ class CoordinatorApp(
     ),
   ).ethChainId().get()
 
-  private val dataAvailability: L1SubmissionConfig.DataAvailability =
-    configs.l1Submission?.dataAvailability ?: L1SubmissionConfig.DataAvailability.ROLLUP
-
   // The finalization monitor reads the L1 contract, so its client must match the deployed contract
   // flavour: a rollup client pointed at a validium contract fails version detection and the
   // coordinator cannot start.
-  private val finalizationMonitorClient: LineaSmartContractClientReadOnlyFinalizedStateProvider = run {
+  private val finalizationMonitorClient: FinalizedStateDataClientReadOnly = run {
     val web3j = createWeb3jHttpClient(
       rpcUrl = configs.l1FinalizationMonitor.l1Endpoint.toString(),
       log = LogManager.getLogger("clients.l1.eth.finalization-monitor"),
@@ -209,6 +218,9 @@ class CoordinatorApp(
         )
 
       L1SubmissionConfig.DataAvailability.VALIDIUM ->
+        // No logs searcher / l1FinalizationMonitor.l1RequestRetries here: the validium client has no
+        // event search yet. When getFinalizedStateData's V2 branch adds the FinalizedStateUpdated
+        // search, the searcher + those retries must be wired in here too.
         Web3JLineaValidiumSmartContractClientReadOnly(
           contractAddress = configs.protocol.l1.contractAddress,
           web3j = web3j,

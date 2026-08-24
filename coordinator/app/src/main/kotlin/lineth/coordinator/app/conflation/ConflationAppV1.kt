@@ -57,7 +57,6 @@ import lineth.coordinator.clients.ForcedTransactionsJsonRpcClient
 import lineth.coordinator.clients.prover.ProverClientFactory
 import lineth.coordinator.config.toJsonRpcRetry
 import lineth.coordinator.config.v2.CoordinatorConfig
-import lineth.coordinator.config.v2.L1SubmissionConfig
 import lineth.encoding.BlockRLPEncoder
 import lineth.fileio.DirectoryCleaner
 import lineth.metrics.LineaMetricsCategory
@@ -130,28 +129,33 @@ class ConflationAppV1(
       smartContractDeploymentBlockNumber = configs.protocol.l2.contractDeploymentBlockNumber?.number,
     ),
   private val forcedTransactionsApp: ForcedTransactionsApp = run {
-    // The coordinator does not support forced transactions on validium chains yet: ForcedTransactionsApp
-    // reads the contract through the rollup client, which fails version detection against a validium
-    // contract. Disable the feature under VALIDIUM even when enabled in config.
-    // KNOWN LIMITATION: the validium V2 contract itself enforces forced-transaction inclusion at
-    // finalization, so storing a forced transaction on such a deployment halts finalization until
-    // coordinator support is added — do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
-    val isValidium = configs.l1Submission?.dataAvailability == L1SubmissionConfig.DataAvailability.VALIDIUM
-    if (isValidium && configs.forcedTransactions?.disabled == false) {
+    val ftxEnabled = ConflationAppHelper.forcedTransactionsEnabled(
+      configs.forcedTransactions,
+      requireNotNull(configs.l1Submission) {
+        "l1Submission config is required to determine the L1 data-availability mode (rollup vs validium)"
+      }.dataAvailability,
+    )
+    // Warn when config asked for forced transactions but they are disabled (the only reason left is validium).
+    // KNOWN LIMITATION: a validium V2 contract enforces forced-tx inclusion at finalization, so storing a
+    // forced transaction on such a deployment halts finalization until coordinator support is added — do
+    // not grant FORCED_TRANSACTION_SENDER_ROLE on validium.
+    if (!ftxEnabled && configs.forcedTransactions?.disabled == false) {
       LogManager.getLogger("conflation.app")
         .warn(
           "Forced transactions are enabled in config but the coordinator does not support them on validium " +
             "chains yet; disabling. Storing a forced transaction on a validium V2 contract halts finalization.",
         )
     }
-    if (configs.forcedTransactions == null || configs.forcedTransactions.disabled || isValidium) {
+    if (!ftxEnabled) {
       ForcedTransactionsApp.createDisabled()
     } else {
       check(configs.proversConfig.proverA.invalidity != null) {
         "prover.invalidity config is required for forced transactions feature to work"
       }
 
-      val ftxConfig = configs.forcedTransactions
+      val ftxConfig = requireNotNull(configs.forcedTransactions) {
+        "forcedTransactions config must be present when forced transactions are enabled"
+      }
       val l1EthClient = createEthApiClient(
         rpcUrl = ftxConfig.l1Endpoint.toString(),
         log = LogManager.getLogger("clients.l1.eth.ftx"),
@@ -161,7 +165,7 @@ class ConflationAppV1(
       val config = ForcedTransactionsApp.Config(
         l1PollingInterval = ftxConfig.l1EventScraping.pollingInterval,
         l1ContractAddress = configs.protocol.l1.contractAddress,
-        l1HighestBlockTag = configs.forcedTransactions.l1HighestBlockTag,
+        l1HighestBlockTag = ftxConfig.l1HighestBlockTag,
         l1EventSearchBlockChunk = ftxConfig.l1EventScraping.ethLogsSearchBlockChunkSize,
         l1EventSearchMaxBlockRange = ftxConfig.l1EventScraping.ethLogsSearchMaxBlockRange,
         ftxSequencerSendingInterval = ftxConfig.processingTickInterval,

@@ -1,5 +1,7 @@
 package lineth.contract.l1
 
+import linea.contract.ValidiumV1
+import linea.contract.ValidiumV2
 import linea.contract.l1.LineaValidiumContractVersion
 import linea.contract.l1.LinethRollupContractVersion
 import linea.domain.createBlobRecord
@@ -75,6 +77,13 @@ class FinalizationFunctionBuildersTest {
       parentAggregationFtxRollingHash = ByteArray(32) { 0x0a },
       finalFtxRollingHash = ByteArray(32) { 0x0b },
       filteredAddresses = listOf(ByteArray(20) { 0x0c }, ByteArray(20) { 0x0d }),
+    ).copy(
+      // createProofToFinalize leaves these zero; make them distinct too so a swap of the adjacent
+      // uint256(0) members (l1RollingHashMessageNumber vs l2MerkleTreesDepth) can't pass silently.
+      aggregatedVerifierIndex = 1,
+      l1RollingHash = ByteArray(32) { 0x0f },
+      l1RollingHashMessageNumber = 4L,
+      l2MerkleTreesDepth = 5,
     )
     val parentL1RollingHash = ByteArray(32) { 0x0e }
     val parentL1RollingHashMessageNumber = 3L
@@ -100,20 +109,10 @@ class FinalizationFunctionBuildersTest {
   }
 
   @Test
-  fun `Validium V2 acceptShnarfData reuses the V1 encoding byte for byte`() {
-    val v1 = FunctionEncoder.encode(
-      Web3JLineaValidiumFunctionBuilders.buildAcceptShnarfDataFunction(
-        LineaValidiumContractVersion.V1,
-        listOf(blob),
-      ),
-    )
-    val v2 = FunctionEncoder.encode(
-      Web3JLineaValidiumFunctionBuilders.buildAcceptShnarfDataFunction(
-        LineaValidiumContractVersion.V2,
-        listOf(blob),
-      ),
-    )
-    assertThat(v2).isEqualTo(v1)
+  fun `Validium acceptShnarfData is unchanged between V1 and V2`() {
+    // We reuse the V1 encoding for V2 because acceptShnarfData is identical in both ABIs. Check that
+    // against the independently-generated V1 and V2 wrappers, not against ourselves.
+    assertThat(ValidiumV2.FUNC_ACCEPTSHNARFDATA).isEqualTo(ValidiumV1.FUNC_ACCEPTSHNARFDATA)
   }
 
   @Test

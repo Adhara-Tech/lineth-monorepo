@@ -27,6 +27,11 @@ class Web3JLineaValidiumSmartContractClientReadOnlyTest {
     assertThatThrownBy { client.parseContractVersion("3.0") }
       .isInstanceOf(IllegalStateException::class.java)
       .hasMessageContaining("Unsupported Validium contract version: 3.0")
+
+    // "10.0" must not be misread as V1 by a bare "1" prefix — it's unsupported, so reject it.
+    assertThatThrownBy { client.parseContractVersion("10.0") }
+      .isInstanceOf(IllegalStateException::class.java)
+      .hasMessageContaining("Unsupported Validium contract version: 10.0")
   }
 
   @Test
