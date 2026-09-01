@@ -89,13 +89,12 @@ class CoordinatorApp(
         configs.smartContractErrors.size,
         configs.smartContractErrors,
       )
-      configs.l1Submission.dynamicGasPriceCap.let { dgc ->
-        log.trace("dynamicGasPriceCap.timeOfDayMultipliers: {}", dgc.timeOfDayMultipliers)
-        log.trace(
-          "dynamicGasPriceCap.gasPriceCapCalculation.timeOfTheDayMultipliers: {}",
-          dgc.gasPriceCapCalculation.timeOfTheDayMultipliers,
-        )
-      }
+      val dgc = configs.l1Submission.dynamicGasPriceCap
+      log.trace("dynamicGasPriceCap.timeOfDayMultipliers: {}", dgc.timeOfDayMultipliers)
+      log.trace(
+        "dynamicGasPriceCap.gasPriceCapCalculation.timeOfTheDayMultipliers: {}",
+        dgc.gasPriceCapCalculation.timeOfTheDayMultipliers,
+      )
 
       Vertx.vertx(vertxConfig)
     }
@@ -167,12 +166,10 @@ class CoordinatorApp(
       ),
     )
 
-  // The data-availability mode decides which L1 contract client the read path uses. l1Submission is
-  // non-nullable in CoordinatorConfig (the TOML [l1-submission] section always provides it).
+  // The data-availability mode decides which L1 contract client the read path uses.
   private val dataAvailability: L1SubmissionConfig.DataAvailability = configs.l1Submission.dataAvailability
 
-  // Forced transactions are unsupported under validium, so the DAO must be disabled there too, not just
-  // the ForcedTransactionsApp. ConflationAppHelper is the single source of truth for that decision.
+  // Must agree with the forcedTransactionsApp wiring below; see ConflationAppHelper.forcedTransactionsEnabled.
   private val forcedTransactionsDao = run {
     if (!ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)) {
       DisabledForcedTransactionsDao()
@@ -270,13 +267,7 @@ class CoordinatorApp(
   )
 
   private val forcedTransactionsApp: ForcedTransactionsApp = run {
-    // The coordinator does not support forced transactions on validium chains yet: ForcedTransactionsApp
-    // reads the contract through the rollup client, which fails version detection against a validium
-    // contract. ConflationAppHelper.forcedTransactionsEnabled is the single source of truth for this
-    // decision (shared with the forced-transactions DAO selection above).
-    // KNOWN LIMITATION: the validium V2 contract itself enforces forced-transaction inclusion at
-    // finalization, so storing a forced transaction on such a deployment halts finalization until
-    // coordinator support is added. Do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
+    // Forced transactions are rollup-only for now; see ConflationAppHelper.forcedTransactionsEnabled.
     val ftxConfig = configs.forcedTransactions
     if (ftxConfig == null || !ConflationAppHelper.forcedTransactionsEnabled(ftxConfig, dataAvailability)) {
       // If we get here with forced transactions enabled in config, the chain must be running in validium mode.

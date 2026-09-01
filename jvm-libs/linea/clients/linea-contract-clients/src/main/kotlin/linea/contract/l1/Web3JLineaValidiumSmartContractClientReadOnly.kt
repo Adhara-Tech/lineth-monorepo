@@ -39,10 +39,9 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
 
   override fun getAddress(): String = contractAddress
 
-  // NOTE: this version cache is intentionally a copy of Web3JLinethRollupSmartContractClientReadOnly's,
-  // kept as-is to keep this PR narrow. Both version enums are now Comparable with a `latest`, so the two
-  // should be extracted into one shared generic, and the get-then-set below made atomic (updateAndGet),
-  // as a follow-up, in both clients together rather than diverging here.
+  // Deliberate copy of Web3JLinethRollupSmartContractClientReadOnly's version cache. Both version
+  // enums are Comparable with a `latest`, so the two could be extracted into one shared generic and
+  // the get-then-set below made atomic (updateAndGet), in both clients together rather than diverging.
   private data class CachedVersion(
     val version: LineaValidiumContractVersion,
     val fetchedAt: Instant,
@@ -118,12 +117,10 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
   override fun getFinalizedStateData(
     blockParameter: BlockParameter,
   ): SafeFuture<FinalizedStateDataProvider.FinalizedStateData> {
-    // Read the version even though both branches return zero today: the exhaustive `when` forces a
-    // conscious decision when V3 lands, and this is where the "coordinator doesn't support forced
-    // transactions on validium yet" limitation lives. Don't simplify this to just returning zero
-    // without the version check.
-    // Note: the version is read at LATEST while the finalized state uses blockParameter (mirrors the
-    // rollup client); harmless because the finalization monitor only ever queries LATEST.
+    // Both branches return zero today, but the exhaustive `when` forces a conscious decision when a
+    // new contract version lands. The version is read at LATEST while the finalized state uses
+    // blockParameter (mirrors the rollup client); harmless because the finalization monitor only
+    // ever queries LATEST.
     return getVersion()
       .thenCombine(finalizedL2BlockNumber(blockParameter)) { version, finalizedBlockNumber ->
         when (version) {
