@@ -1,5 +1,7 @@
 package lineth.contract.l1
 
+import linea.contract.ValidiumV1
+import linea.contract.ValidiumV2
 import linea.contract.l1.LineaValidiumContractVersion
 import linea.contract.l1.LinethRollupContractVersion
 import linea.domain.createBlobRecord
@@ -7,6 +9,7 @@ import linea.domain.createProofToFinalize
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.web3j.abi.FunctionEncoder
 
 class FinalizationFunctionBuildersTest {
   private val blob = createBlobRecord(startBlockNumber = 1UL, endBlockNumber = 2UL)
@@ -48,6 +51,68 @@ class FinalizationFunctionBuildersTest {
         0L,
       ),
     ).isNotNull()
+    assertThat(
+      Web3JLineaValidiumFunctionBuilders.buildFinalizeBlocksFunction(
+        LineaValidiumContractVersion.V2,
+        aggregation,
+        blob,
+        ByteArray(32),
+        0L,
+      ),
+    ).isNotNull()
+  }
+
+  @Test
+  fun `Validium V2 finalization parameters encode identically to rollup V8`() {
+    // Validium V2's FinalizationDataV4 is the same tuple as rollup V8's, so the (positionally
+    // encoded) parameter payload must match the battle-tested V8 builder byte for byte — this
+    // pins the struct field ORDER, the one thing that can silently corrupt the calldata.
+    // Every V4-specific field gets a DISTINCT non-zero value so a swapped or substituted argument
+    // (e.g. the two ftx numbers, or the parent vs final ftx rolling hash) changes the encoding.
+    val distinctlyPopulatedAggregation = createProofToFinalize(
+      firstBlockNumber = 1L,
+      finalBlockNumber = 2L,
+      parentAggregationFtxNumber = 7UL,
+      finalFtxNumber = 9UL,
+      parentAggregationFtxRollingHash = ByteArray(32) { 0x0a },
+      finalFtxRollingHash = ByteArray(32) { 0x0b },
+      filteredAddresses = listOf(ByteArray(20) { 0x0c }, ByteArray(20) { 0x0d }),
+    ).copy(
+      // createProofToFinalize leaves these zero; make them distinct too so a swap of the adjacent
+      // uint256(0) members (l1RollingHashMessageNumber vs l2MerkleTreesDepth) can't pass silently.
+      aggregatedVerifierIndex = 1,
+      l1RollingHash = ByteArray(32) { 0x0f },
+      l1RollingHashMessageNumber = 4L,
+      l2MerkleTreesDepth = 5,
+    )
+    val parentL1RollingHash = ByteArray(32) { 0x0e }
+    val parentL1RollingHashMessageNumber = 3L
+
+    val v2 = FunctionEncoder.encode(
+      Web3JLineaValidiumFunctionBuilders.buildFinalizeBlockFunctionV2(
+        distinctlyPopulatedAggregation,
+        blob,
+        parentL1RollingHash,
+        parentL1RollingHashMessageNumber,
+      ),
+    )
+    val v8 = FunctionEncoder.encode(
+      FunctionBuildersV8.buildFinalizeBlocksFunctionV8(
+        distinctlyPopulatedAggregation,
+        blob,
+        parentL1RollingHash,
+        parentL1RollingHashMessageNumber,
+      ),
+    )
+    // strip the 4-byte selectors ("0x" + 8 hex chars); the parameter encoding must be identical
+    assertThat(v2.substring(10)).isEqualTo(v8.substring(10))
+  }
+
+  @Test
+  fun `Validium acceptShnarfData is unchanged between V1 and V2`() {
+    // We reuse the V1 encoding for V2 because acceptShnarfData is identical in both ABIs. Check that
+    // against the independently-generated V1 and V2 wrappers, not against ourselves.
+    assertThat(ValidiumV2.FUNC_ACCEPTSHNARFDATA).isEqualTo(ValidiumV1.FUNC_ACCEPTSHNARFDATA)
   }
 
   @Test
@@ -75,6 +140,15 @@ class FinalizationFunctionBuildersTest {
       {
         Web3JLineaValidiumFunctionBuilders.buildFinalizeBlocksFunction(
           LineaValidiumContractVersion.V1,
+          aggregation,
+          unprovenBlob,
+          ByteArray(32),
+          0L,
+        )
+      },
+      {
+        Web3JLineaValidiumFunctionBuilders.buildFinalizeBlocksFunction(
+          LineaValidiumContractVersion.V2,
           aggregation,
           unprovenBlob,
           ByteArray(32),
