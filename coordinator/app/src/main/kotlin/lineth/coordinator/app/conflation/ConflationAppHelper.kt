@@ -2,12 +2,27 @@ package lineth.coordinator.app.conflation
 
 import linea.domain.toBlockParameter
 import linea.ethapi.EthApiClient
+import lineth.coordinator.config.v2.ForcedTransactionsConfig
+import lineth.coordinator.config.v2.L1SubmissionConfig
 import lineth.persistence.AggregationsRepository
 import lineth.persistence.BatchesRepository
 import lineth.persistence.BlobsRepository
 import tech.pegasys.teku.infrastructure.async.SafeFuture
 
 object ConflationAppHelper {
+  /**
+   * Forced transactions are a rollup-only feature in the coordinator today: ForcedTransactionsApp reads
+   * the contract through the rollup client, which fails against a validium contract. They are therefore
+   * disabled under VALIDIUM even when enabled in config. Single source of truth for both the
+   * ForcedTransactionsApp guard and the forced-transactions DAO selection.
+   */
+  internal fun forcedTransactionsEnabled(
+    forcedTransactions: ForcedTransactionsConfig?,
+    dataAvailability: L1SubmissionConfig.DataAvailability,
+  ): Boolean =
+    forcedTransactions?.disabled == false &&
+      dataAvailability != L1SubmissionConfig.DataAvailability.VALIDIUM
+
   /**
    * Returns the last block number inclusive upto which we have consecutive proven blobs or the last finalized block
    * number inclusive

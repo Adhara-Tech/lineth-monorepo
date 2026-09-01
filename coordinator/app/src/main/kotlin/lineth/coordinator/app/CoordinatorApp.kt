@@ -8,6 +8,8 @@ import io.vertx.sqlclient.SqlClient
 import linea.DisabledService
 import linea.LongRunningService
 import linea.clients.StateManagerV1JsonRpcClient
+import linea.contract.l1.FinalizedStateDataClientReadOnly
+import linea.contract.l1.Web3JLineaValidiumSmartContractClientReadOnly
 import linea.contract.l1.Web3JLinethRollupSmartContractClientReadOnly
 import linea.domain.BlockParameter
 import linea.domain.RetryConfig
@@ -18,6 +20,7 @@ import linea.persistence.db.PersistenceRetryer
 import linea.web3j.createWeb3jHttpClient
 import linea.web3j.ethapi.createEthApiClient
 import lineth.coordinator.api.Api
+import lineth.coordinator.app.conflation.ConflationAppHelper
 import lineth.coordinator.app.conflation.ConflationAppV1
 import lineth.coordinator.app.conflation.ConflationAppV2
 import lineth.coordinator.app.conflation.TracesClientFactory.createTracesClients
@@ -28,6 +31,7 @@ import lineth.coordinator.clients.prover.ProverClientFactory
 import lineth.coordinator.config.toJsonRpcRetry
 import lineth.coordinator.config.v2.CoordinatorConfig
 import lineth.coordinator.config.v2.DatabaseConfig
+import lineth.coordinator.config.v2.L1SubmissionConfig
 import lineth.coordinator.config.v2.isEnabled
 import lineth.coordinator.config.v2.logPretty
 import lineth.coordinator.extensions.CoordinatorContext
@@ -162,8 +166,19 @@ class CoordinatorApp(
         persistenceRetryer = persistenceRetryer,
       ),
     )
+
+  // The data-availability mode decides which L1 contract client the read path uses, so l1Submission is
+  // now mandatory for every coordinator (the TOML [l1-submission] section always provides it). Fail
+  // loudly naming the missing key rather than silently defaulting to ROLLUP on a validium chain.
+  private val dataAvailability: L1SubmissionConfig.DataAvailability =
+    requireNotNull(configs.l1Submission) {
+      "l1Submission config is required to determine the L1 data-availability mode (rollup vs validium)"
+    }.dataAvailability
+
+  // Forced transactions are unsupported under validium, so the DAO must be disabled there too — not just
+  // the ForcedTransactionsApp. ConflationAppHelper is the single source of truth for that decision.
   private val forcedTransactionsDao = run {
-    if (configs.forcedTransactions?.disabled ?: true) {
+    if (!ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)) {
       DisabledForcedTransactionsDao()
     } else {
       RetryingPostgresForcedTransactionsDao(
@@ -187,30 +202,45 @@ class CoordinatorApp(
     ),
   ).ethChainId().get()
 
-  private val linethRollupClientForFinalizationMonitor = run {
+  // The finalization monitor reads the L1 contract, so its client must match the deployed contract
+  // flavour: a rollup client pointed at a validium contract fails version detection and the
+  // coordinator cannot start.
+  private val finalizationMonitorClient: FinalizedStateDataClientReadOnly = run {
     val web3j = createWeb3jHttpClient(
       rpcUrl = configs.l1FinalizationMonitor.l1Endpoint.toString(),
       log = LogManager.getLogger("clients.l1.eth.finalization-monitor"),
     )
-    Web3JLinethRollupSmartContractClientReadOnly(
-      contractAddress = configs.protocol.l1.contractAddress,
-      web3j = web3j,
-      ethLogsSearcher = EthLogsSearcherImpl(
-        vertx = vertx,
-        ethApiClient = createEthApiClient(
-          web3jClient = web3j,
-          requestRetryConfig = configs.l1FinalizationMonitor.l1RequestRetries,
-          vertx = vertx,
-        ),
-      ),
-      finalizedStateSearchInitialBlockParameter = configs.protocol.l1.contractDeploymentBlockNumber
-        ?: BlockParameter.Tag.EARLIEST,
-    )
+    when (dataAvailability) {
+      L1SubmissionConfig.DataAvailability.ROLLUP ->
+        Web3JLinethRollupSmartContractClientReadOnly(
+          contractAddress = configs.protocol.l1.contractAddress,
+          web3j = web3j,
+          ethLogsSearcher = EthLogsSearcherImpl(
+            vertx = vertx,
+            ethApiClient = createEthApiClient(
+              web3jClient = web3j,
+              requestRetryConfig = configs.l1FinalizationMonitor.l1RequestRetries,
+              vertx = vertx,
+            ),
+          ),
+          finalizedStateSearchInitialBlockParameter = configs.protocol.l1.contractDeploymentBlockNumber
+            ?: BlockParameter.Tag.EARLIEST,
+        )
+
+      L1SubmissionConfig.DataAvailability.VALIDIUM ->
+        // No logs searcher / l1FinalizationMonitor.l1RequestRetries here: the validium client has no
+        // event search yet. When getFinalizedStateData's V2 branch adds the FinalizedStateUpdated
+        // search, the searcher + those retries must be wired in here too.
+        Web3JLineaValidiumSmartContractClientReadOnly(
+          contractAddress = configs.protocol.l1.contractAddress,
+          web3j = web3j,
+        )
+    }
   }
 
   private val lastFinalizedBlock: ULong = L1BasedLastFinalizedBlockProvider(
     vertx,
-    linethRollupSmartContractClient = linethRollupClientForFinalizationMonitor,
+    lineaSmartContractClient = finalizationMonitorClient,
     consistentNumberOfBlocksOnL1 = configs.conflation.consistentNumberOfBlocksOnL1ToWait,
   ).getLastFinalizedBlock().get()
 
@@ -244,10 +274,26 @@ class CoordinatorApp(
   )
 
   private val forcedTransactionsApp: ForcedTransactionsApp = run {
-    if (configs.forcedTransactions == null || configs.forcedTransactions.disabled) {
+    // The coordinator does not support forced transactions on validium chains yet: ForcedTransactionsApp
+    // reads the contract through the rollup client, which fails version detection against a validium
+    // contract. ConflationAppHelper.forcedTransactionsEnabled is the single source of truth for this
+    // decision (shared with the forced-transactions DAO selection above).
+    // KNOWN LIMITATION: the validium V2 contract itself enforces forced-transaction inclusion at
+    // finalization, so storing a forced transaction on such a deployment halts finalization until
+    // coordinator support is added — do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
+    val ftxEnabled = ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)
+    if (!ftxEnabled && configs.forcedTransactions?.disabled == false) {
+      log.warn(
+        "Forced transactions are enabled in config but the coordinator does not support them on validium " +
+          "chains yet; disabling. Storing a forced transaction on a validium V2 contract halts finalization.",
+      )
+    }
+    if (!ftxEnabled) {
       ForcedTransactionsApp.createDisabled()
     } else {
-      val ftxConfig = configs.forcedTransactions
+      val ftxConfig = requireNotNull(configs.forcedTransactions) {
+        "forcedTransactions config must be present when forced transactions are enabled"
+      }
       val l1EthClient = createEthApiClient(
         rpcUrl = ftxConfig.l1Endpoint.toString(),
         log = LogManager.getLogger("clients.l1.eth.ftx"),
@@ -384,7 +430,7 @@ class CoordinatorApp(
     configs = configs,
     vertx = vertx,
     httpJsonRpcClientFactory = httpJsonRpcClientFactory,
-    finalizedStateDataProvider = linethRollupClientForFinalizationMonitor,
+    finalizedStateDataProvider = finalizationMonitorClient,
     lastFinalizedBlock = lastFinalizedBlock,
     batchesRepository = batchesRepository,
     blobsRepository = blobsRepository,
