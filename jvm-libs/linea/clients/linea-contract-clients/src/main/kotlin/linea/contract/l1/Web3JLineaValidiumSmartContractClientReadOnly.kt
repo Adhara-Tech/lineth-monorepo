@@ -41,7 +41,7 @@ open class Web3JLineaValidiumSmartContractClientReadOnly(
 
   // NOTE: this version cache is intentionally a copy of Web3JLinethRollupSmartContractClientReadOnly's,
   // kept as-is to keep this PR narrow. Both version enums are now Comparable with a `latest`, so the two
-  // should be extracted into one shared generic — and the get-then-set below made atomic (updateAndGet) —
+  // should be extracted into one shared generic, and the get-then-set below made atomic (updateAndGet),
   // as a follow-up, in both clients together rather than diverging here.
   private data class CachedVersion(
     val version: LineaValidiumContractVersion,

@@ -66,7 +66,7 @@ class FinalizationFunctionBuildersTest {
   @Test
   fun `Validium V2 finalization parameters encode identically to rollup V8`() {
     // Validium V2's FinalizationDataV4 is the same tuple as rollup V8's, so the (positionally
-    // encoded) parameter payload must match the battle-tested V8 builder byte for byte — this
+    // encoded) parameter payload must match the battle-tested V8 builder byte for byte. This
     // pins the struct field ORDER, the one thing that can silently corrupt the calldata.
     // Every V4-specific field gets a DISTINCT non-zero value so a swapped or substituted argument
     // (e.g. the two ftx numbers, or the parent vs final ftx rolling hash) changes the encoding.

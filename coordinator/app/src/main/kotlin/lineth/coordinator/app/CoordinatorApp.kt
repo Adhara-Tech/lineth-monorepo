@@ -89,7 +89,7 @@ class CoordinatorApp(
         configs.smartContractErrors.size,
         configs.smartContractErrors,
       )
-      configs.l1Submission?.dynamicGasPriceCap?.let { dgc ->
+      configs.l1Submission.dynamicGasPriceCap.let { dgc ->
         log.trace("dynamicGasPriceCap.timeOfDayMultipliers: {}", dgc.timeOfDayMultipliers)
         log.trace(
           "dynamicGasPriceCap.gasPriceCapCalculation.timeOfTheDayMultipliers: {}",
@@ -148,7 +148,7 @@ class CoordinatorApp(
         BlobsPostgresDao(
           config =
           BlobsPostgresDao.Config(
-            maxBlobsToReturn = configs.l1Submission?.blob?.dbMaxBlobsToReturn ?: 50u,
+            maxBlobsToReturn = configs.l1Submission.blob.dbMaxBlobsToReturn,
           ),
           connection = sqlClient,
         ),
@@ -167,15 +167,11 @@ class CoordinatorApp(
       ),
     )
 
-  // The data-availability mode decides which L1 contract client the read path uses, so l1Submission is
-  // now mandatory for every coordinator (the TOML [l1-submission] section always provides it). Fail
-  // loudly naming the missing key rather than silently defaulting to ROLLUP on a validium chain.
-  private val dataAvailability: L1SubmissionConfig.DataAvailability =
-    requireNotNull(configs.l1Submission) {
-      "l1Submission config is required to determine the L1 data-availability mode (rollup vs validium)"
-    }.dataAvailability
+  // The data-availability mode decides which L1 contract client the read path uses. l1Submission is
+  // non-nullable in CoordinatorConfig (the TOML [l1-submission] section always provides it).
+  private val dataAvailability: L1SubmissionConfig.DataAvailability = configs.l1Submission.dataAvailability
 
-  // Forced transactions are unsupported under validium, so the DAO must be disabled there too — not just
+  // Forced transactions are unsupported under validium, so the DAO must be disabled there too, not just
   // the ForcedTransactionsApp. ConflationAppHelper is the single source of truth for that decision.
   private val forcedTransactionsDao = run {
     if (!ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)) {
@@ -280,20 +276,18 @@ class CoordinatorApp(
     // decision (shared with the forced-transactions DAO selection above).
     // KNOWN LIMITATION: the validium V2 contract itself enforces forced-transaction inclusion at
     // finalization, so storing a forced transaction on such a deployment halts finalization until
-    // coordinator support is added — do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
-    val ftxEnabled = ConflationAppHelper.forcedTransactionsEnabled(configs.forcedTransactions, dataAvailability)
-    if (!ftxEnabled && configs.forcedTransactions?.disabled == false) {
-      log.warn(
-        "Forced transactions are enabled in config but the coordinator does not support them on validium " +
-          "chains yet; disabling. Storing a forced transaction on a validium V2 contract halts finalization.",
-      )
-    }
-    if (!ftxEnabled) {
+    // coordinator support is added. Do not use FORCED_TRANSACTION_SENDER_ROLE with this coordinator.
+    val ftxConfig = configs.forcedTransactions
+    if (ftxConfig == null || !ConflationAppHelper.forcedTransactionsEnabled(ftxConfig, dataAvailability)) {
+      // If we get here with forced transactions enabled in config, the chain must be running in validium mode.
+      if (ftxConfig?.disabled == false) {
+        log.warn(
+          "Forced transactions are enabled in config but the coordinator does not support them on validium " +
+            "chains yet; disabling. Storing a forced transaction on a validium V2 contract halts finalization.",
+        )
+      }
       ForcedTransactionsApp.createDisabled()
     } else {
-      val ftxConfig = requireNotNull(configs.forcedTransactions) {
-        "forcedTransactions config must be present when forced transactions are enabled"
-      }
       val l1EthClient = createEthApiClient(
         rpcUrl = ftxConfig.l1Endpoint.toString(),
         log = LogManager.getLogger("clients.l1.eth.ftx"),
@@ -450,7 +444,7 @@ class CoordinatorApp(
     if (configs.l1Submission.isEnabled()) {
       L1RelayingAppV1(
         configs = configs,
-        l1SubmissionConfig = configs.l1Submission!!,
+        l1SubmissionConfig = configs.l1Submission,
         vertx = vertx,
         l1ChainId = l1ChainId,
         lastFinalizedBlock = lastFinalizedBlock,

@@ -28,7 +28,7 @@ class Web3JLineaValidiumSmartContractClientReadOnlyTest {
       .isInstanceOf(IllegalStateException::class.java)
       .hasMessageContaining("Unsupported Validium contract version: 3.0")
 
-    // "10.0" must not be misread as V1 by a bare "1" prefix — it's unsupported, so reject it.
+    // "10.0" must not be misread as V1 by a bare "1" prefix. It is unsupported, so reject it.
     assertThatThrownBy { client.parseContractVersion("10.0") }
       .isInstanceOf(IllegalStateException::class.java)
       .hasMessageContaining("Unsupported Validium contract version: 10.0")
@@ -77,7 +77,7 @@ class Web3JLineaValidiumSmartContractClientReadOnlyTest {
   @Test
   fun `getFinalizedStateData reports the finalized block with a zero forced-transaction number`() {
     // V1 has no forced transactions; V2 has them on-chain but the coordinator does not support them
-    // on validium yet — both report the initial value (0) until that support lands.
+    // on validium yet, so both report the initial value (0) until that support lands.
     LineaValidiumContractVersion.entries.forEach { version ->
       val fakeClient = object : Web3JLineaValidiumSmartContractClientReadOnly(
         web3j = mock<Web3j>(),
