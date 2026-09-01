@@ -10,6 +10,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.web3j.abi.FunctionEncoder
+import org.web3j.tx.TransactionManager
 
 class FinalizationFunctionBuildersTest {
   private val blob = createBlobRecord(startBlockNumber = 1UL, endBlockNumber = 2UL)
@@ -110,9 +111,38 @@ class FinalizationFunctionBuildersTest {
 
   @Test
   fun `Validium acceptShnarfData is unchanged between V1 and V2`() {
-    // We reuse the V1 encoding for V2 because acceptShnarfData is identical in both ABIs. Check that
-    // against the independently-generated V1 and V2 wrappers, not against ourselves.
-    assertThat(ValidiumV2.FUNC_ACCEPTSHNARFDATA).isEqualTo(ValidiumV1.FUNC_ACCEPTSHNARFDATA)
+    // We reuse the V1 encoding for V2 because acceptShnarfData is identical in both ABIs. The wrapper
+    // FUNC_ constants only carry the function NAME, so comparing them would pass even if the argument
+    // lists diverged; compare full encoded calldata instead, using the independently-generated V1 and
+    // V2 wrappers as the reference encoders (encodeFunctionCall builds calldata without a connection).
+    val prevShnarf = ByteArray(32) { 0x0a }
+    val expectedShnarf = ByteArray(32) { 0x0b }
+    val finalStateRootHash = ByteArray(32) { 0x0c }
+
+    val zeroAddress = "0x0000000000000000000000000000000000000000"
+    val v1Reference = ValidiumV1.load(zeroAddress, null, null as TransactionManager?, null)
+      .acceptShnarfData(prevShnarf, expectedShnarf, finalStateRootHash)
+      .encodeFunctionCall()
+    val v2Reference = ValidiumV2.load(zeroAddress, null, null as TransactionManager?, null)
+      .acceptShnarfData(prevShnarf, expectedShnarf, finalStateRootHash)
+      .encodeFunctionCall()
+    // The two generated wrappers must agree (name, argument types and order), and our shared builder
+    // must produce those exact bytes for both versions.
+    assertThat(v2Reference).isEqualTo(v1Reference)
+
+    val blobWithDistinctShnarfData = blob.copy(
+      blobCompressionProof = blob.blobCompressionProof!!.copy(
+        prevShnarf = prevShnarf,
+        expectedShnarf = expectedShnarf,
+        finalStateRootHash = finalStateRootHash,
+      ),
+    )
+    listOf(LineaValidiumContractVersion.V1, LineaValidiumContractVersion.V2).forEach { version ->
+      val encoded = FunctionEncoder.encode(
+        Web3JLineaValidiumFunctionBuilders.buildAcceptShnarfDataFunction(version, listOf(blobWithDistinctShnarfData)),
+      )
+      assertThat(encoded).isEqualTo(v1Reference)
+    }
   }
 
   @Test
